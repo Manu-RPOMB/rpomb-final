@@ -125,12 +125,13 @@ export default function App() {
       Propose 3 idées de recettes anti-gaspi simples. Pour chaque idée, liste les ingrédients utilisés.`;
 
       try {
-          // CORRECTION: Utilisation de 'gemini-pro' au lieu de 'flash' pour éviter l'erreur 404
-          const model = genAI.getGenerativeModel({ model: "gemini-pro" });
-          const result = await model.generateContent(prompt);
-          const response = await result.response;
-          setAiResponse(response.text());
-      } catch (error) {
+        // ON UTILISE FLASH (Plus rapide et compatible avec la nouvelle version)
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        setAiResponse(response.text());
+    } catch (error) {
           setAiResponse("⚠️ Erreur IA : " + error.message);
       } finally {
           setAiLoading(false);
