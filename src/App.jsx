@@ -288,7 +288,7 @@ export default function App() {
   };
 
   // === FIN BLOC 1 ===//
-  // === DEBUT BLOC 2 : LOGIQUE METIER & IA VIA SUPABASE (V70) ===
+  // === DEBUT BLOC 2 : LOGIQUE V71 (STABLE & ANTI-CRASH) ===
 
   useEffect(() => {
     if (userProfile && activeSiteId) {
@@ -299,7 +299,22 @@ export default function App() {
     }
   }, [activeSiteId, userProfile]);
 
-  // DATA FETCHING
+  // NOUVEAU : Réflexe pour charger les détails d'une recette quand on clique dessus
+  useEffect(() => {
+    if (selectedRecette) {
+      const chargerDetails = async () => {
+        // On récupère les liens recette_ingredients ET les infos de l'ingrédient associé
+        const { data } = await supabase
+          .from('recette_ingredients')
+          .select('*, ingredients(*)')
+          .eq('recette_id', selectedRecette.id);
+        setRecetteDetails(data || []);
+      };
+      chargerDetails();
+    }
+  }, [selectedRecette]);
+
+  // DATA FETCHING (Sécurisé : on renvoie toujours [] si erreur pour éviter l'écran blanc)
   async function fetchStock() {
     const { data } = await supabase
       .from('ingredients')
@@ -307,13 +322,13 @@ export default function App() {
       .eq('site_id', activeSiteId)
       .eq('is_validated', true)
       .order('nom');
-    if (data) setIngredients(data);
+    setIngredients(data || []);
     const { data: pending } = await supabase
       .from('ingredients')
       .select('*')
       .eq('site_id', activeSiteId)
       .eq('is_validated', false);
-    if (pending) setPendingIngredients(pending);
+    setPendingIngredients(pending || []);
   }
   async function fetchSales() {
     const { data } = await supabase
@@ -330,7 +345,7 @@ export default function App() {
       .select('*')
       .eq('site_id', activeSiteId)
       .order('nom_recette');
-    if (data) setRecettes(data);
+    setRecettes(data || []);
   }
   async function fetchHistorique() {
     const { data } = await supabase
@@ -513,33 +528,17 @@ export default function App() {
     setCommandeDetail(null);
   };
 
-  // --- IA GENERIC HELPER (V70 : ARCHITECTURE PRO VIA SUPABASE) ---
+  // --- IA GENERIC HELPER (V71 : INTELLIGENT & SECURE) ---
   const callGeminiAPI = async (prompt, imageBase64 = null) => {
-    console.log('🚀 Appel via Supabase Edge Function...');
-
+    console.log('🚀 Appel IA via Supabase...');
     try {
-      // C'EST ICI LA MAGIE : On appelle TON serveur, pas Google direct
       const { data, error } = await supabase.functions.invoke('gemini', {
         body: { prompt, imageBase64 },
       });
-
-      if (error) {
-        console.error('Erreur Supabase Function:', error);
-        // On affiche un message clair si le serveur plante
-        throw new Error(
-          error.message || 'Erreur de communication avec le serveur Supabase'
-        );
-      }
-
-      // Si le serveur a renvoyé une erreur métier (ex: clé invalide côté serveur)
-      if (data && data.error) {
-        throw new Error('Erreur Backend: ' + data.error);
-      }
-
-      if (!data || !data.text) {
+      if (error) throw new Error(error.message || 'Erreur serveur Supabase');
+      if (data && data.error) throw new Error('Erreur Backend: ' + data.error);
+      if (!data || !data.text)
         throw new Error("L'IA n'a pas renvoyé de texte.");
-      }
-
       return data.text;
     } catch (err) {
       console.error('💥 Exception IA:', err);
@@ -561,10 +560,7 @@ export default function App() {
       const base64Data = e.target.result.split(',')[1];
       try {
         const prompt = `Analyse ce bon de livraison. Extrais les articles. JSON uniquement : [{"raw_name": "...", "qty": 1, "unit": "..."}]`;
-
-        // Appel via la nouvelle fonction V70
         const textResponse = await callGeminiAPI(prompt, base64Data);
-
         const jsonStr = textResponse.replace(/```json|```/g, '').trim();
         let items;
         try {
@@ -668,9 +664,8 @@ export default function App() {
       .join(', ');
     const prompt = `Agis comme un chef. Stock dispo: ${
       restes || 'rien'
-    }. Propose 3 recettes simples anti-gaspi et 3 recettes de sandwiches et 3 recettes de snacks sains.`;
+    }. Propose 3 recettes simples anti-gaspi.`;
     try {
-      // Appel via la nouvelle fonction V70
       const textResponse = await callGeminiAPI(prompt);
       setAiResponse(textResponse);
     } catch (error) {
@@ -713,7 +708,7 @@ export default function App() {
     }
   };
   const getFilteredRecettes = () => {
-    let filtered = recettes;
+    let filtered = recettes || [];
     if (filterRecetteFamily !== 'Toutes') {
       const allowedSubFamilies = RECETTE_STRUCTURE[filterRecetteFamily] || [];
       filtered = recettes.filter((r) =>
@@ -1188,7 +1183,196 @@ export default function App() {
       </div>
     );
 
-  // === FIN BLOC 2 ===//
+  // === FIN BLOC 2 ===
+  // === BLOC 2.5 : LES HELPERS MANQUANTS (ANTI-CRASH) ===
+
+  // 1. Filtrage des ingrédients pour la vue "Base Articles"
+  const getFilteredIngredients = () => {
+    let list = ingredients || [];
+    if (filtreFamille && filtreFamille !== 'Tout') {
+      list = list.filter((i) => i.famille === filtreFamille);
+    }
+    return list.sort((a, b) => a.nom.localeCompare(b.nom));
+  };
+
+  // 2. Gestion des recettes (Calculs de prix & Marges)
+  const getMargeApplicable = (categorie) => {
+    // Définit la marge en € selon la catégorie (Logique métier)
+    if (!categorie) return 0;
+    if (categorie.includes('Sandwiches')) return 1.5; // Ex: Marge sandwich
+    if (categorie.includes('Potage')) return 1.0;
+    if (categorie.includes('Plat')) return 2.5;
+    return 1.0; // Marge par défaut
+  };
+
+  const calculerPrixRevientRecette = () => {
+    if (!recetteDetails || recetteDetails.length === 0) return 0;
+    // Somme (Prix Unitaire Ingrédient * Quantité Recette)
+    return recetteDetails.reduce((total, ligne) => {
+      const prixIng = ligne.ingredients?.prix_achat_moyen || 0;
+      return total + prixIng * (ligne.quantite_requise || 0);
+    }, 0);
+  };
+
+  const getRecetteAllergenes = () => {
+    if (!recetteDetails) return [];
+    const all = new Set();
+    recetteDetails.forEach((ligne) => {
+      if (ligne.ingredients?.allergenes) {
+        ligne.ingredients.allergenes.forEach((a) => all.add(a));
+      }
+    });
+    return Array.from(all);
+  };
+
+  // 3. Actions d'édition Recette (Ajout / Suppression Ingrédient)
+  const ajouterIngredientAuPlat = async () => {
+    if (!selectedRecette || !ajoutIngredientRecette || !qteAjoutRecette) return;
+
+    // On récupère l'unité de l'ingrédient pour l'afficher
+    const ing = ingredients.find(
+      (i) => i.id === parseInt(ajoutIngredientRecette)
+    );
+    const uniteRecette = ing ? ing.unite : 'unité';
+
+    const { error } = await supabase.from('recette_ingredients').insert({
+      recette_id: selectedRecette.id,
+      ingredient_id: parseInt(ajoutIngredientRecette),
+      quantite_requise: parseFloat(qteAjoutRecette),
+      unite_recette: uniteRecette,
+    });
+
+    if (error) {
+      alert('Erreur ajout: ' + error.message);
+    } else {
+      // Rechargement immédiat de la liste
+      const { data } = await supabase
+        .from('recette_ingredients')
+        .select('*, ingredients(*)')
+        .eq('recette_id', selectedRecette.id);
+      setRecetteDetails(data || []);
+      // Reset champs
+      setAjoutIngredientRecette('');
+      setQteAjoutRecette('');
+    }
+  };
+
+  const supprimerIngredientRecette = async (ligneId) => {
+    if (!confirm('Retirer cet ingrédient de la recette ?')) return;
+
+    await supabase.from('recette_ingredients').delete().eq('id', ligneId);
+
+    // Mise à jour locale (plus rapide que rappeler le serveur)
+    setRecetteDetails((prev) => prev.filter((item) => item.id !== ligneId));
+  };
+
+  // 4. Edition Ingrédient (Base Articles)
+  const saveIngredientDetails = async () => {
+    if (!editingIngredient) return;
+    const { error } = await supabase
+      .from('ingredients')
+      .update({
+        famille: editingIngredient.famille,
+        code_barre: editingIngredient.code_barre,
+        reference_fournisseur: editingIngredient.reference_fournisseur,
+        fournisseur: editingIngredient.fournisseur,
+        unite: editingIngredient.unite,
+        stock_ideal: editingIngredient.stock_ideal,
+        prix_achat_moyen: editingIngredient.prix_achat_moyen,
+        allergenes: editingIngredient.allergenes,
+      })
+      .eq('id', editingIngredient.id);
+
+    if (error) alert('Erreur sauvegarde: ' + error.message);
+    else {
+      alert('✅ Article mis à jour !');
+      setEditingIngredient(null);
+      fetchStock(); // Rafraîchir la liste principale
+    }
+  };
+
+  const toggleAllergen = (alg) => {
+    if (!editingIngredient) return;
+    const current = editingIngredient.allergenes || [];
+    if (current.includes(alg)) {
+      setEditingIngredient({
+        ...editingIngredient,
+        allergenes: current.filter((a) => a !== alg),
+      });
+    } else {
+      setEditingIngredient({
+        ...editingIngredient,
+        allergenes: [...current, alg],
+      });
+    }
+  };
+
+  // 5. Gestion Réception
+  const demarrerReception = async (cmd) => {
+    // Charge les lignes de la commande
+    const { data } = await supabase
+      .from('commande_lignes')
+      .select('*')
+      .eq('commande_id', cmd.id);
+    // Prépare l'objet de réception (copie les quantités attendues dans reçues par défaut)
+    const lignesPretes = data.map((l) => ({
+      ...l,
+      qte_recue: l.quantite, // Par défaut on a tout reçu
+      statut_ligne: 'ok',
+    }));
+    setReceptionEnCours({ info: cmd, lignes: lignesPretes });
+    setModeReception('commande');
+  };
+
+  const updateLigneReception = (index, field, value) => {
+    if (!receptionEnCours) return;
+    const newLignes = [...receptionEnCours.lignes];
+    newLignes[index][field] = value;
+    setReceptionEnCours({ ...receptionEnCours, lignes: newLignes });
+  };
+
+  const validerReceptionFinale = async () => {
+    if (!receptionEnCours || !confirm("Valider l'entrée en stock ?")) return;
+
+    for (const ligne of receptionEnCours.lignes) {
+      // 1. Mettre à jour le stock
+      if (ligne.statut_ligne !== 'rupture' && parseFloat(ligne.qte_recue) > 0) {
+        // Retrouver l'ingrédient par son nom (ou ID si dispo)
+        const ing = ingredients.find((i) => i.nom === ligne.nom_ingredient);
+        if (ing) {
+          await supabase
+            .from('ingredients')
+            .update({
+              stock_actuel:
+                (ing.stock_actuel || 0) + parseFloat(ligne.qte_recue),
+            })
+            .eq('id', ing.id);
+        }
+      }
+      // 2. Mettre à jour la ligne de commande (optionnel : stocker le reçu réel)
+    }
+
+    // Clôturer la commande
+    await supabase
+      .from('commandes')
+      .update({ status: 'received' })
+      .eq('id', receptionEnCours.info.id);
+    logAction('Réception', `Cmd ${receptionEnCours.info.fournisseur} clôturée`);
+
+    alert('✅ Stock mis à jour !');
+    setReceptionEnCours(null);
+    setModeReception('choix');
+    fetchHistorique();
+    fetchStock();
+  };
+
+  // 6. Navigation
+  const goToReception = () => {
+    setActiveTab('livraison');
+    setModeReception('choix');
+  };
+
+  // === FIN BLOC 2.5 ===
   // === DEBUT BLOC 3 : AFFICHAGE ===
   return (
     <div className="max-w-md mx-auto bg-slate-50 min-h-screen pb-24 font-sans text-slate-800">
