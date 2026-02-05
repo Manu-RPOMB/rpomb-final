@@ -664,7 +664,7 @@ export default function App() {
       .join(', ');
     const prompt = `Agis comme un chef. Stock dispo: ${
       restes || 'rien'
-    }. Propose 3 recettes simples anti-gaspi.`;
+    }. Propose 3 recettes simples anti-gaspi et 3 recettes de sandwiches et 3 recettes de snacks sains.`;
     try {
       const textResponse = await callGeminiAPI(prompt);
       setAiResponse(textResponse);
