@@ -67,7 +67,6 @@ if (typeof global === 'undefined') {
 const SUPABASE_URL = 'https://ofbehieunbdhmhjgdgcc.supabase.co';
 const SUPABASE_ANON_KEY =
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9mYmVoaWV1bmJkaG1oamdkZ2NjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg5MjU2MDgsImV4cCI6MjA4NDUwMTYwOH0._qz6-Nc8df_-be9ik-aLAOhJHijxwxBWm_pZSQKypuM';
-const GEMINI_API_KEY = 'AIzaSyBfWpbYTcx8IrdrltaPuAbxofHioP8bVAE';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -316,20 +315,31 @@ export default function App() {
 
   // DATA FETCHING (Sécurisé : on renvoie toujours [] si erreur pour éviter l'écran blanc)
   async function fetchStock() {
-    const { data } = await supabase
-      .from('ingredients')
-      .select('*')
-      .eq('site_id', activeSiteId)
-      .eq('is_validated', true)
-      .order('nom');
-    setIngredients(data || []);
-    const { data: pending } = await supabase
-      .from('ingredients')
-      .select('*')
-      .eq('site_id', activeSiteId)
-      .eq('is_validated', false);
-    setPendingIngredients(pending || []);
+    try {
+      const { data, error } = await supabase
+        .from('ingredients')
+        .select('*')
+        .eq('site_id', activeSiteId)
+        .eq('is_validated', true)
+        .order('nom');
+
+      if (error) throw error;
+      setIngredients(data || []);
+
+      const { data: pending } = await supabase
+        .from('ingredients')
+        .select('*')
+        .eq('site_id', activeSiteId)
+        .eq('is_validated', false);
+      setPendingIngredients(pending || []);
+    } catch (e) {
+      console.error('Erreur chargement stock:', e);
+      // Important : ne pas laisser l'app planter, on met des tableaux vides
+      setIngredients([]);
+      setPendingIngredients([]);
+    }
   }
+
   async function fetchSales() {
     const { data } = await supabase
       .from('ventes')
@@ -339,6 +349,7 @@ export default function App() {
       .limit(500);
     if (data) setSalesData(data);
   }
+
   async function fetchRecettes() {
     const { data } = await supabase
       .from('recettes')
@@ -347,6 +358,7 @@ export default function App() {
       .order('nom_recette');
     setRecettes(data || []);
   }
+
   async function fetchHistorique() {
     const { data } = await supabase
       .from('commandes')
@@ -376,6 +388,7 @@ export default function App() {
       console.log('Log error', e);
     }
   };
+
   const fetchLogs = async () => {
     const { data } = await supabase
       .from('audit_log')
@@ -396,13 +409,13 @@ export default function App() {
     });
     if (error) setLoginError('Erreur : ' + error.message);
   };
+
   const handleLogout = async () => {
     await supabase.auth.signOut();
     setLoginEmail('');
     setLoginPass('');
     setActiveSiteId(null);
   };
-
   // PANIER
   const initCart = () => {
     const needs = ingredients
@@ -528,20 +541,46 @@ export default function App() {
     setCommandeDetail(null);
   };
 
-  // --- IA GENERIC HELPER (V71 : INTELLIGENT & SECURE) ---
+  // --- IA GENERIC HELPER (V72 : SECURE & ROBUST) ---
   const callGeminiAPI = async (prompt, imageBase64 = null) => {
-    console.log('🚀 Appel IA via Supabase...');
+    console.log('🚀 Appel IA via Supabase Edge Function...');
+
+    // 1. Vérification réseau avant d'appeler
+    if (!navigator.onLine) {
+      throw new Error("Pas de connexion internet. L'IA ne peut pas répondre.");
+    }
+
     try {
+      // On appelle la fonction côté serveur (Supabase)
+      // Assure-toi d'avoir déployé la fonction 'gemini' sur Supabase
       const { data, error } = await supabase.functions.invoke('gemini', {
         body: { prompt, imageBase64 },
       });
-      if (error) throw new Error(error.message || 'Erreur serveur Supabase');
-      if (data && data.error) throw new Error('Erreur Backend: ' + data.error);
-      if (!data || !data.text)
-        throw new Error("L'IA n'a pas renvoyé de texte.");
+
+      // 2. Gestion fine des erreurs Supabase
+      if (error) {
+        console.error('Erreur Supabase Function:', error);
+        // On traduit l'erreur technique en message humain
+        if (error.message.includes('Function not found')) {
+          throw new Error("Le service IA (Edge Function) n'est pas déployé.");
+        }
+        throw new Error('Erreur de communication avec le serveur IA.');
+      }
+
+      // 3. Gestion des erreurs renvoyées par l'IA elle-même
+      if (data && data.error) {
+        throw new Error('Erreur IA: ' + data.error);
+      }
+
+      // 4. Validation de la réponse
+      if (!data || !data.text) {
+        throw new Error("L'IA a répondu vide. Réessayez.");
+      }
+
       return data.text;
     } catch (err) {
       console.error('💥 Exception IA:', err);
+      // On relance l'erreur pour que l'interface puisse l'afficher (ex: dans une alerte)
       throw err;
     }
   };
@@ -610,7 +649,7 @@ export default function App() {
 
       // Appel API Gemini
       const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${API_KEY}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
