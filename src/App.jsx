@@ -546,71 +546,155 @@ export default function App() {
     }
   };
 
-  // SCAN IA
-  const handleScanUpload = (e) => {
-    const file = e.target.files[0];
-    if (file) processScan(file);
+  // === SCAN IA V3 (Turbo Compression) ===
+
+  // 1. Petite fonction utilitaire pour compresser l'image
+  const compressImage = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (event) => {
+        const img = new Image();
+        img.src = event.target.result;
+        img.onload = () => {
+          // On redimensionne à 800px de large max (largement suffisant pour l'IA)
+          const canvas = document.createElement('canvas');
+          const maxWidth = 800;
+          let width = img.width;
+          let height = img.height;
+
+          if (width > maxWidth) {
+            height *= maxWidth / width;
+            width = maxWidth;
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
+
+          // On renvoie l'image en JPEG qualité 70% (très léger)
+          // On retire le préfixe "data:image/jpeg;base64," pour l'API
+          resolve(canvas.toDataURL('image/jpeg', 0.7).split(',')[1]);
+        };
+        img.onerror = (error) => reject(error);
+      };
+      reader.onerror = (error) => reject(error);
+    });
   };
-  const processScan = async (file) => {
+
+  // 2. Fonction principale (Celle qui est appelée par le bouton)
+  const handleScanUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
     setIsScanning(true);
     setShowScanModal(true);
     setScanResults([]);
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      const base64Data = e.target.result.split(',')[1];
-      try {
-        const prompt = `Analyse ce bon de livraison. Extrais les articles. JSON uniquement : [{"raw_name": "...", "qty": 1, "unit": "..."}]`;
-        const textResponse = await callGeminiAPI(prompt, base64Data);
-        const jsonStr = textResponse.replace(/```json|```/g, '').trim();
-        let items;
-        try {
-          items = JSON.parse(jsonStr);
-        } catch (e) {
-          throw new Error("Format JSON invalide reçu de l'IA");
-        }
 
-        const { data: aliases } = await supabase
-          .from('supplier_aliases')
-          .select('*')
-          .eq('site_id', activeSiteId);
-        const matchedItems = items.map((item) => {
-          const known = aliases?.find(
-            (a) => a.alias_name.toLowerCase() === item.raw_name.toLowerCase()
-          );
-          if (known) {
-            const ing = ingredients.find((i) => i.id === known.ingredient_id);
-            if (ing)
-              return {
-                ...item,
-                matchId: ing.id,
-                matchName: ing.nom,
-                status: 'found',
-              };
-          }
-          const looseMatch = ingredients.find(
+    try {
+      // ÉTAPE CLÉ : On compresse AVANT d'envoyer
+      // Ça évite le blocage sur mobile
+      const base64Data = await compressImage(file);
+
+      const prompt = `
+        Agis comme un extracteur de données strict. 
+        Analyse ce bon de livraison.
+        Extrais la liste des articles avec quantité et unité.
+        
+        RÈGLES :
+        1. JSON brut UNIQUEMENT. Pas de markdown.
+        2. Format : [{"raw_name": "nom", "qty": 1, "unit": "kg"}]
+        3. Si vide : []
+      `;
+
+      // Appel API Gemini
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  { text: prompt },
+                  {
+                    inline_data: { mime_type: 'image/jpeg', data: base64Data },
+                  },
+                ],
+              },
+            ],
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      // Nettoyage de la réponse
+      let rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+      const firstBracket = rawText.indexOf('[');
+      const lastBracket = rawText.lastIndexOf(']');
+
+      if (firstBracket !== -1 && lastBracket !== -1) {
+        rawText = rawText.substring(firstBracket, lastBracket + 1);
+      } else {
+        rawText = '[]';
+      }
+
+      let items = [];
+      try {
+        items = JSON.parse(rawText);
+      } catch (e) {
+        console.error('JSON invalide', e);
+        items = [];
+      }
+
+      // Matching avec la base ingrédient
+      const { data: aliases } = await supabase
+        .from('supplier_aliases')
+        .select('*')
+        .eq('site_id', activeSiteId);
+
+      const matchedItems = items.map((item) => {
+        const known = aliases?.find(
+          (a) => a.alias_name.toLowerCase() === item.raw_name.toLowerCase()
+        );
+
+        let match = null;
+        let status = 'unknown';
+
+        if (known) {
+          match = ingredients.find((i) => i.id === known.ingredient_id);
+          if (match) status = 'found';
+        } else {
+          match = ingredients.find(
             (i) =>
               i.nom.toLowerCase().includes(item.raw_name.toLowerCase()) ||
               item.raw_name.toLowerCase().includes(i.nom.toLowerCase())
           );
-          if (looseMatch)
-            return {
-              ...item,
-              matchId: looseMatch.id,
-              matchName: looseMatch.nom,
-              status: 'guess',
-            };
-          return { ...item, matchId: '', matchName: '', status: 'unknown' };
-        });
-        setScanResults(matchedItems);
-      } catch (err) {
-        alert('Erreur IA :\n' + err.message);
-        setShowScanModal(false);
-      } finally {
-        setIsScanning(false);
-      }
-    };
-    reader.readAsDataURL(file);
+          if (match) status = 'guess';
+        }
+
+        return {
+          ...item,
+          matchId: match ? match.id : '',
+          matchName: match ? match.nom : '',
+          status: status,
+        };
+      });
+
+      setScanResults(matchedItems);
+    } catch (error) {
+      console.error('Erreur Scan:', error);
+      alert("Erreur lors de l'analyse. Vérifiez votre connexion.");
+    } finally {
+      // Quoi qu'il arrive, on arrête le spinner
+      setIsScanning(false);
+    }
   };
+
+  // 3. Mise à jour manuelle (INDISPENSABLE pour corriger l'IA)
   const updateScanMatch = (index, ingId) => {
     const newResults = [...scanResults];
     const ing = ingredients.find((i) => i.id === parseInt(ingId));
@@ -619,25 +703,32 @@ export default function App() {
     newResults[index].status = ingId ? 'manual' : 'unknown';
     setScanResults(newResults);
   };
+
+  // 4. Validation finale (INDISPENSABLE pour enregistrer)
   const validateScan = async () => {
-    if (!confirm('Valider ?')) return;
+    if (!confirm("Valider l'entrée en stock ?")) return;
+
     let count = 0;
     for (const item of scanResults) {
       if (item.matchId) {
         const ing = ingredients.find((i) => i.id === parseInt(item.matchId));
         if (ing) {
+          // A. Update Stock
           await supabase
             .from('ingredients')
             .update({
               stock_actuel: (ing.stock_actuel || 0) + parseFloat(item.qty),
             })
             .eq('id', ing.id);
+
+          // B. Apprentissage Alias
           const { data: existing } = await supabase
             .from('supplier_aliases')
             .select('id')
             .eq('alias_name', item.raw_name)
             .eq('site_id', activeSiteId)
             .single();
+
           if (!existing) {
             await supabase.from('supplier_aliases').insert({
               site_id: activeSiteId,
@@ -649,32 +740,10 @@ export default function App() {
         }
       }
     }
-    alert(`✅ ${count} OK !`);
+    alert(`✅ ${count} articles ajoutés !`);
     fetchStock();
     setShowScanModal(false);
   };
-
-  // IDEES RECETTES IA
-  const askGeminiIdeas = async () => {
-    setAiLoading(true);
-    setShowAiModal(true);
-    const restes = ingredients
-      .filter((i) => i.stock_actuel > 0)
-      .map((i) => `${i.stock_actuel} ${i.unite} de ${i.nom}`)
-      .join(', ');
-    const prompt = `Agis comme un chef. Stock dispo: ${
-      restes || 'rien'
-    }. Propose 3 recettes simples anti-gaspi et 3 recettes de sandwiches et 3 recettes de snacks sains.`;
-    try {
-      const textResponse = await callGeminiAPI(prompt);
-      setAiResponse(textResponse);
-    } catch (error) {
-      setAiResponse('⚠️ Erreur IA :\n' + error.message);
-    } finally {
-      setAiLoading(false);
-    }
-  };
-
   // AUTRES FONCTIONS
   const findFamilyOfRecipe = (subFamily) => {
     for (const [famille, sousFamilles] of Object.entries(RECETTE_STRUCTURE)) {
