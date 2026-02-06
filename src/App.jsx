@@ -1441,6 +1441,32 @@ export default function App() {
     setModeReception('choix');
   };
 
+  // 7. IA : SOS Recettes (Celle qui causait ton erreur !)
+  const askGeminiIdeas = async () => {
+    if (ingredients.length === 0) return alert('Stock vide !');
+    setAiLoading(true);
+    setShowAiModal(true);
+
+    // On prépare la liste du stock pour l'IA
+    const stockStr = ingredients
+      .filter((i) => i.stock_actuel > 0)
+      .map((i) => `- ${i.nom} (${i.stock_actuel} ${i.unite})`)
+      .join('\n');
+
+    const prompt = `Je suis un chef de cuisine collective. Voici mon stock :\n${stockStr}\n\nPropose-moi 3 idées de menus (Entrée, Plat, Dessert) réalisables maintenant pour limiter le gaspillage. Sois créatif mais simple.`;
+
+    try {
+      // On réutilise la fonction callGeminiAPI définie plus haut (dans Bloc 2)
+      // Si elle manque aussi, dis-le moi !
+      const reponse = await callGeminiAPI(prompt);
+      setAiResponse(reponse);
+    } catch (e) {
+      setAiResponse('Erreur IA: ' + e.message);
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
   // === FIN BLOC 2.5 ===
   // === DEBUT BLOC 3 : AFFICHAGE ===
   return (
